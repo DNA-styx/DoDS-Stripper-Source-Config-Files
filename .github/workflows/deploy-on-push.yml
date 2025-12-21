@@ -1,4 +1,4 @@
-name: Deploy changed .cfg files via SFTP (robust, verbose)
+name: Deploy changed .cfg files via SFTP (commit-based, robust)
 
 on:
   push:
@@ -106,13 +106,13 @@ jobs:
           nl -ba changed.txt || true
           echo "files=$(wc -l < changed.txt || true)" >> "$GITHUB_OUTPUT"
 
-      - name: Upload / remove changed .cfg files (from commit content; tolerant)
+      - name: Upload / remove changed .cfg files (upload from commit; use commit existence check)
         if: ${{ always() }}
         env:
           DRY_RUN: ${{ github.event.inputs.dry_run }}
           AFTER: ${{ github.sha }}
         run: |
-          # Do not let one failing file/command exit the whole step; we handle errors per-file.
+          # Don't let one failure abort the whole loop; handle per-file errors.
           set -u
           DRY_RUN="${DRY_RUN:-true}"
           REPO_PREFIX="${REPO_PREFIX%/}"
@@ -126,12 +126,10 @@ jobs:
           nl -ba changed.txt || true
           echo "----"
 
-          # Loop files
           while IFS= read -r f || [ -n "$f" ]; do
             [ -z "$f" ] && continue
             echo "Processing: '$f'"
 
-            # Compute relpath
             case "$f" in
               "$REPO_PREFIX" | "$REPO_PREFIX/"* )
                 if [ "$f" = "$REPO_PREFIX" ]; then
@@ -153,10 +151,9 @@ jobs:
               continue
             fi
 
-            # Present in commit?
-            if git --no-pager ls-files --error-unmatch "$f" >/dev/null 2>&1; then
-              echo "  Present in commit — will upload from commit object"
-
+            # NEW: check file existence directly in the AFTER commit (reliable)
+            if git cat-file -e "${AFTER}:$f" 2>/dev/null; then
+              echo "  Present in AFTER commit — upload from commit object"
               for i in 1 2 3; do
                 HOST_VAR="SERVER${i}_HOST"; HOST="${!HOST_VAR:-}"
                 if [ -z "$HOST" ]; then
@@ -175,12 +172,11 @@ jobs:
                 echo "  Server $i: host=$HOST user=$USER target=$remote_target"
 
                 if [ "$DRY_RUN" = "true" ]; then
-                  echo "    [DRY] would: ssh $USER@$HOST mkdir -p '$remote_dir' ; scp <tmpfile> -> $remote_target"
+                  echo "    [DRY] would: mkdir -p '$remote_dir' ; scp <tmpfile> -> $remote_target"
                   continue
                 fi
 
-                # Ensure remote dir (capture stdout/stderr and exit code)
-                echo "    Running mkdir on remote: ssh -p ${PORT:-22} $USER@$HOST mkdir -p '$remote_dir'"
+                # Ensure remote dir
                 mkdir_out="$(sshpass -p "$PASS" ssh -p "${PORT:-22}" -o StrictHostKeyChecking=no "$USER@$HOST" "mkdir -p '$remote_dir'" 2>&1)"
                 mkdir_rc=$?
                 echo "    mkdir rc=$mkdir_rc"
@@ -189,7 +185,7 @@ jobs:
                   sed -n '1,200p' <(printf '%s\n' "$mkdir_out") || true
                 fi
 
-                # Attempt to extract file contents from commit
+                # Extract file from commit
                 tmpf="$(mktemp)" || { echo "    mktemp failed"; continue; }
                 git_show_err="/tmp/gitshow.err.$$"
                 git show "${AFTER}:$f" > "$tmpf" 2> "$git_show_err"
@@ -198,28 +194,16 @@ jobs:
                   echo "    git show failed rc=$git_show_rc ; stderr:"
                   sed -n '1,200p' "$git_show_err" || true
                   rm -f "$git_show_err" "$tmpf"
-                  # Try fallback: checkout file into workspace
-                  echo "    Fallback: git checkout ${AFTER} -- \"$f\""
-                  checkout_err="/tmp/gitcheckout.err.$$"
-                  if git checkout "${AFTER}" -- "$f" 2> "$checkout_err"; then
-                    echo "    git checkout succeeded; will upload from workspace path '$f'"
-                    upload_src="$f"
-                  else
-                    echo "    git checkout failed; stderr:"
-                    sed -n '1,200p' "$checkout_err" || true
-                    rm -f "$checkout_err"
-                    echo "    Skipping upload for this server"
-                    continue
-                  fi
+                  echo "    Skipping upload for this file/server"
+                  continue
                 else
                   echo "    git show OK (size: $(stat -c%s "$tmpf") bytes)"
-                  upload_src="$tmpf"
                 fi
 
                 # scp and capture stderr
                 scp_err="/tmp/scp.err.$$"
-                echo "    scp $upload_src -> $USER@$HOST:$remote_target"
-                sshpass -p "$PASS" scp -P "${PORT:-22}" -p "$upload_src" "$USER@$HOST:$remote_target" 2> "$scp_err"
+                echo "    scp $tmpf -> $USER@$HOST:$remote_target"
+                sshpass -p "$PASS" scp -P "${PORT:-22}" -p "$tmpf" "$USER@$HOST:$remote_target" 2> "$scp_err"
                 scp_rc=$?
                 if [ $scp_rc -ne 0 ]; then
                   echo "    scp FAILED rc=$scp_rc ; stderr:"
@@ -227,17 +211,11 @@ jobs:
                 else
                   echo "    scp succeeded"
                 fi
-                rm -f "$scp_err" || true
-
-                # clean up temp file if we created one
-                if [ "$upload_src" = "$tmpf" ] && [ -f "$tmpf" ]; then
-                  rm -f "$tmpf" || true
-                fi
-                rm -f "$git_show_err" || true
+                rm -f "$scp_err" "$tmpf" "$git_show_err" || true
               done
 
             else
-              echo "  NOT present in commit (deleted) — will remove remote entries"
+              echo "  NOT present in AFTER commit (treated as deleted) — will remove remote entries"
               for i in 1 2 3; do
                 HOST_VAR="SERVER${i}_HOST"; HOST="${!HOST_VAR:-}"
                 if [ -z "$HOST" ]; then
