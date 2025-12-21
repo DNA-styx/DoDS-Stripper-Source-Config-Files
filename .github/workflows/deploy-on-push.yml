@@ -118,24 +118,24 @@ jobs:
           git ls-tree -r --name-only "${AFTER}" | sed -n '1,200p' || true
           echo "----"
 
-          # Build changed.txt
+          # Build changed.txt (fix: group pipelines and redirect their output)
           if [ "$RUN_MODE" = "full" ] || [ -z "$BEFORE" ] || [ "$BEFORE" = "0000000000000000000000000000000000000000" ]; then
             echo "FULL mode or initial commit — listing all .cfg files under REPO_PREFIX in AFTER commit"
-            git ls-tree -r --name-only "${AFTER}" \
+            (git ls-tree -r --name-only "${AFTER}" \
               | grep -E -i "^${REPO_PREFIX}(/|$)" \
-              | grep -E -i '\.cfg$' || true > changed.txt
+              | grep -E -i '\.cfg$') > changed.txt || true
           else
             echo "CHANGED mode — raw diff between BEFORE and AFTER:"
             git --no-pager diff --name-only "$BEFORE" "$AFTER" | sed -n '1,200p' || true
-            git --no-pager diff --name-only "$BEFORE" "$AFTER" \
+            (git --no-pager diff --name-only "$BEFORE" "$AFTER" \
               | grep -E -i "^${REPO_PREFIX}(/|$)" \
-              | grep -E -i '\.cfg$' || true > changed.txt
+              | grep -E -i '\.cfg$') > changed.txt || true
 
             if [ ! -s changed.txt ]; then
               echo "Diff returned no .cfg files; falling back to listing .cfg files from AFTER commit under prefix"
-              git ls-tree -r --name-only "${AFTER}" \
+              (git ls-tree -r --name-only "${AFTER}" \
                 | grep -E -i "^${REPO_PREFIX}(/|$)" \
-                | grep -E -i '\.cfg$' || true > changed.txt
+                | grep -E -i '\.cfg$') > changed.txt || true
             fi
           fi
 
