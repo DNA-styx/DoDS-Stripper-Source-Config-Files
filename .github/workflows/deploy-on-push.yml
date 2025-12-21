@@ -1,4 +1,4 @@
-name: Deploy changed .cfg files via SFTP (commit-based, robust)
+name: Deploy changed .cfg files via SFTP (commit-based, no dry-run)
 
 on:
   push:
@@ -10,10 +10,6 @@ on:
         description: 'Run mode: "changed" (only files changed in the push) or "full" (upload all tracked .cfg files under REPO_PREFIX).'
         required: false
         default: 'full'
-      dry_run:
-        description: 'If "true", only print actions (no ssh/scp). Useful for testing.'
-        required: false
-        default: 'true'
       ref:
         description: 'Branch/ref to checkout when running manually (optional).'
         required: false
@@ -24,21 +20,25 @@ jobs:
     runs-on: ubuntu-latest
 
     env:
+      # Path in the repo containing the .cfg files to deploy
       REPO_PREFIX: 'addons/sourcemod/configs/stripper'
       VERBOSE: 'true'
 
+      # Server 1 (required)
       SERVER1_HOST: ${{ secrets.SERVER1_HOST }}
       SERVER1_USER: ${{ secrets.SERVER1_USER }}
       SERVER1_PASS: ${{ secrets.SERVER1_PASS }}
       SERVER1_REMOTE_BASE: ${{ secrets.SERVER1_REMOTE_BASE }}
       SERVER1_PORT: ${{ secrets.SERVER1_PORT }}
 
+      # Server 2 (optional)
       SERVER2_HOST: ${{ secrets.SERVER2_HOST }}
       SERVER2_USER: ${{ secrets.SERVER2_USER }}
       SERVER2_PASS: ${{ secrets.SERVER2_PASS }}
       SERVER2_REMOTE_BASE: ${{ secrets.SERVER2_REMOTE_BASE }}
       SERVER2_PORT: ${{ secrets.SERVER2_PORT }}
 
+      # Server 3 (optional)
       SERVER3_HOST: ${{ secrets.SERVER3_HOST }}
       SERVER3_USER: ${{ secrets.SERVER3_USER }}
       SERVER3_PASS: ${{ secrets.SERVER3_PASS }}
@@ -46,12 +46,12 @@ jobs:
       SERVER3_PORT: ${{ secrets.SERVER3_PORT }}
 
     steps:
-      - name: Checkout repository (full history)
+      - name: "Checkout repository (full history)"
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Optionally checkout requested ref (workflow_dispatch)
+      - name: "Optionally checkout requested ref (workflow_dispatch)"
         if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.ref != '' }}
         run: |
           REF="${{ github.event.inputs.ref }}"
@@ -59,12 +59,12 @@ jobs:
           git fetch origin "$REF" --depth=1 || true
           git checkout "$REF" || git checkout -b "$REF" "origin/$REF" || true
 
-      - name: Install sshpass
+      - name: "Install sshpass"
         run: |
           sudo apt-get update
           sudo apt-get install -y sshpass
 
-      - name: Determine changed .cfg files (robust)
+      - name: "Determine changed .cfg files (robust)"
         id: changed
         env:
           RUN_MODE: ${{ github.event.inputs.run_mode }}
@@ -78,6 +78,7 @@ jobs:
           REPO_PREFIX="${REPO_PREFIX%/}"
           echo "RUN_MODE=$RUN_MODE BEFORE=$BEFORE AFTER=$AFTER REPO_PREFIX=$REPO_PREFIX"
 
+          # Ensure we have relevant commits locally
           git fetch --no-tags --prune origin || true
           if [ -n "$BEFORE" ] && [ "$BEFORE" != "0000000000000000000000000000000000000000" ]; then
             git fetch origin "$BEFORE":"refs/remotes/origin/$BEFORE" || true
@@ -101,25 +102,23 @@ jobs:
             fi
           fi
 
+          # Ensure file exists
           touch changed.txt
           echo "Changed files:"
           nl -ba changed.txt || true
           echo "files=$(wc -l < changed.txt || true)" >> "$GITHUB_OUTPUT"
 
-      - name: Upload / remove changed .cfg files (upload from commit; use commit existence check)
+      - name: "Upload / remove changed .cfg files (from commit content)"
         if: ${{ always() }}
         env:
-          DRY_RUN: ${{ github.event.inputs.dry_run }}
           AFTER: ${{ github.sha }}
         run: |
-          # Don't let one failure abort the whole loop; handle per-file errors.
           set -u
-          DRY_RUN="${DRY_RUN:-true}"
           REPO_PREFIX="${REPO_PREFIX%/}"
           AFTER="${AFTER}"
 
           if [ ! -s changed.txt ]; then
-            echo "No files to process; exiting."
+            echo "No .cfg files matched under prefix '$REPO_PREFIX'. Nothing to do."
             exit 0
           fi
 
@@ -151,9 +150,10 @@ jobs:
               continue
             fi
 
-            # NEW: check file existence directly in the AFTER commit (reliable)
+            # Check file exists in AFTER commit object
             if git cat-file -e "${AFTER}:$f" 2>/dev/null; then
-              echo "  Present in AFTER commit — upload from commit object"
+              echo "  Present in AFTER commit — uploading from commit object"
+
               for i in 1 2 3; do
                 HOST_VAR="SERVER${i}_HOST"; HOST="${!HOST_VAR:-}"
                 if [ -z "$HOST" ]; then
@@ -171,11 +171,6 @@ jobs:
 
                 echo "  Server $i: host=$HOST user=$USER target=$remote_target"
 
-                if [ "$DRY_RUN" = "true" ]; then
-                  echo "    [DRY] would: mkdir -p '$remote_dir' ; scp <tmpfile> -> $remote_target"
-                  continue
-                fi
-
                 # Ensure remote dir
                 mkdir_out="$(sshpass -p "$PASS" ssh -p "${PORT:-22}" -o StrictHostKeyChecking=no "$USER@$HOST" "mkdir -p '$remote_dir'" 2>&1)"
                 mkdir_rc=$?
@@ -185,7 +180,7 @@ jobs:
                   sed -n '1,200p' <(printf '%s\n' "$mkdir_out") || true
                 fi
 
-                # Extract file from commit
+                # Extract file from commit into temp file
                 tmpf="$(mktemp)" || { echo "    mktemp failed"; continue; }
                 git_show_err="/tmp/gitshow.err.$$"
                 git show "${AFTER}:$f" > "$tmpf" 2> "$git_show_err"
@@ -200,7 +195,7 @@ jobs:
                   echo "    git show OK (size: $(stat -c%s "$tmpf") bytes)"
                 fi
 
-                # scp and capture stderr
+                # scp the temp file to remote
                 scp_err="/tmp/scp.err.$$"
                 echo "    scp $tmpf -> $USER@$HOST:$remote_target"
                 sshpass -p "$PASS" scp -P "${PORT:-22}" -p "$tmpf" "$USER@$HOST:$remote_target" 2> "$scp_err"
@@ -215,7 +210,7 @@ jobs:
               done
 
             else
-              echo "  NOT present in AFTER commit (treated as deleted) — will remove remote entries"
+              echo "  NOT present in AFTER commit (treated as deleted) — removing remote entries"
               for i in 1 2 3; do
                 HOST_VAR="SERVER${i}_HOST"; HOST="${!HOST_VAR:-}"
                 if [ -z "$HOST" ]; then
@@ -228,16 +223,12 @@ jobs:
                   continue
                 fi
                 remote_target="${REMOTE_BASE%/}/$relpath"
-                if [ "$DRY_RUN" = "true" ]; then
-                  echo "    [DRY] Would remove $remote_target on $HOST"
-                else
-                  rm_out="$(sshpass -p "$PASS" ssh -p "${PORT:-22}" -o StrictHostKeyChecking=no "$USER@$HOST" "rm -f '$remote_target' || true" 2>&1)"
-                  rm_rc=$?
-                  echo "    remote rm rc=$rm_rc"
-                  if [ -n "$rm_out" ]; then
-                    echo "    remote rm output:"
-                    sed -n '1,200p' <(printf '%s\n' "$rm_out") || true
-                  fi
+                rm_out="$(sshpass -p "$PASS" ssh -p "${PORT:-22}" -o StrictHostKeyChecking=no "$USER@$HOST" "rm -f '$remote_target' || true" 2>&1)"
+                rm_rc=$?
+                echo "    remote rm rc=$rm_rc"
+                if [ -n "$rm_out" ]; then
+                  echo "    remote rm output:"
+                  sed -n '1,200p' <(printf '%s\n' "$rm_out") || true
                 fi
               done
             fi
@@ -245,10 +236,7 @@ jobs:
             echo "----"
           done < changed.txt
 
-      - name: Summary
+      - name: "Summary"
         if: ${{ always() }}
         run: |
-          echo "Workflow finished."
-          if [ "${{ github.event.inputs.dry_run }}" = "true" ]; then
-            echo "This was a dry run; re-run with dry_run = false to upload."
-          fi
+          echo "Workflow finished. All matched .cfg files were processed (uploaded or removed)."
