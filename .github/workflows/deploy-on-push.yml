@@ -118,7 +118,7 @@ jobs:
           git ls-tree -r --name-only "${AFTER}" | sed -n '1,200p' || true
           echo "----"
 
-          # Build changed.txt (fix: group pipelines and redirect their output)
+          # Build changed.txt (group pipelines and redirect their output)
           if [ "$RUN_MODE" = "full" ] || [ -z "$BEFORE" ] || [ "$BEFORE" = "0000000000000000000000000000000000000000" ]; then
             echo "FULL mode or initial commit — listing all .cfg files under REPO_PREFIX in AFTER commit"
             (git ls-tree -r --name-only "${AFTER}" \
@@ -148,7 +148,7 @@ jobs:
           echo "Count: $(wc -l < changed.txt || true)"
           echo "files=$(wc -l < changed.txt || true)" >> "$GITHUB_OUTPUT"
 
-      - name: "Upload / remove changed .cfg files to configured servers"
+      - name: "Upload / remove changed .cfg files to configured servers (debug)"
         if: ${{ always() }}
         env:
           DRY_RUN: ${{ github.event.inputs.dry_run }}
@@ -157,56 +157,17 @@ jobs:
           DRY_RUN="${DRY_RUN:-true}"
           REPO_PREFIX="${REPO_PREFIX%/}"
 
-          if [ "${VERBOSE:-false}" = "true" ]; then
-            echo "Environment summary:"
-            echo " REPO_PREFIX = $REPO_PREFIX"
-            echo " DRY_RUN = $DRY_RUN"
-            for i in 1 2 3; do
-              HOST_VAR="SERVER${i}_HOST"
-              HOST="${!HOST_VAR:-}"
-              if [ -n "$HOST" ]; then
-                RB_VAR="SERVER${i}_REMOTE_BASE"
-                U_VAR="SERVER${i}_USER"
-                P_VAR="SERVER${i}_PORT"
-                echo " SERVER${i}: host=$HOST remote_base=${!RB_VAR:-} user=${!U_VAR:-} port=${!P_VAR:-22}"
-              fi
-            done
-            echo "----"
+          echo ">>> Printing changed.txt"
+          if [ -f changed.txt ]; then
+            nl -ba changed.txt || true
+          else
+            echo "changed.txt missing"
           fi
-
-          if [ ! -f changed.txt ] || [ ! -s changed.txt ]; then
-            echo "No .cfg files matched under prefix '$REPO_PREFIX'. Nothing to do."
-            exit 0
-          fi
-
-          upload_file() {
-            local host="$1" user="$2" pass="$3" remote_base="$4" port="$5" local_file="$6" relpath="$7"
-            remote_base="${remote_base%/}"
-            remote_dir="$(dirname "${remote_base}/${relpath}")"
-            if [ "$DRY_RUN" = "true" ]; then
-              echo "[DRY] Would ensure remote dir: $host:$remote_dir"
-              echo "[DRY] Would upload: $local_file -> $host:$remote_base/$relpath"
-            else
-              echo "Ensuring remote dir on $host: $remote_dir"
-              sshpass -p "$pass" ssh -p "${port:-22}" -o StrictHostKeyChecking=no "$user@$host" "mkdir -p '$remote_dir'"
-              echo "Uploading $local_file -> $host:$remote_base/$relpath"
-              sshpass -p "$pass" scp -P "${port:-22}" -p "$local_file" "$user@$host:$remote_base/$relpath"
-            fi
-          }
-
-          remove_file() {
-            local host="$1" user="$2" pass="$3" remote_base="$4" port="$5" relpath="$6"
-            remote_base="${remote_base%/}"
-            if [ "$DRY_RUN" = "true" ]; then
-              echo "[DRY] Would remove: $host:$remote_base/$relpath"
-            else
-              echo "Removing remote file $host:$remote_base/$relpath"
-              sshpass -p "$pass" ssh -p "${port:-22}" -o StrictHostKeyChecking=no "$user@$host" "rm -f '$remote_base/$relpath' || true"
-            fi
-          }
+          echo "----"
 
           while IFS= read -r f || [ -n "$f" ]; do
             [ -z "$f" ] && continue
+            echo "Processing: '$f'"
 
             case "$f" in
               "$REPO_PREFIX" | "$REPO_PREFIX/"* )
@@ -217,53 +178,65 @@ jobs:
                 fi
                 ;;
               *)
-                echo "Skipping $f (not under $REPO_PREFIX)"
+                echo "  -> Skipping because not under REPO_PREFIX"
                 continue
                 ;;
             esac
 
-            # Sanity-check: only .cfg files
+            echo "  relpath = '$relpath'"
+
             if ! echo "$relpath" | grep -E -i '\.cfg$' >/dev/null 2>&1; then
-              echo "Skipping $f (not a .cfg file)"
+              echo "  -> Skipping because not a .cfg file"
               continue
             fi
 
-            if git --no-pager ls-files --error-unmatch "$f" >/dev/null 2>&1; then
-              if [ -f "$f" ]; then
-                echo "Preparing to upload: $f (remote relpath: $relpath)"
-                for i in 1 2 3; do
-                  HOST_VAR="SERVER${i}_HOST"; HOST="${!HOST_VAR:-}"
-                  if [ -z "$HOST" ]; then
-                    continue
-                  fi
-                  USER_VAR="SERVER${i}_USER"; PASS_VAR="SERVER${i}_PASS"; RB_VAR="SERVER${i}_REMOTE_BASE"; PORT_VAR="SERVER${i}_PORT"
-                  USER="${!USER_VAR:-}"; PASS="${!PASS_VAR:-}"; REMOTE_BASE="${!RB_VAR:-}"; PORT="${!PORT_VAR:-22}"
-                  if [ -z "$USER" ] || [ -z "$PASS" ] || [ -z "$REMOTE_BASE" ]; then
-                    echo "Skipping server $i because required variables not set (USER/PASS/REMOTE_BASE)."
-                    continue
-                  fi
-                  upload_file "$HOST" "$USER" "$PASS" "$REMOTE_BASE" "$PORT" "$f" "$relpath"
-                done
-              else
-                echo "Skipping $f (not a regular file in workspace)"
-              fi
+            # Show whether file exists in workspace and its stat
+            if [ -e "$f" ]; then
+              echo "  File exists in workspace: $(ls -l "$f" 2>/dev/null || echo 'ls failed')"
             else
-              echo "Detected delete for $f -> removing remote $relpath"
-              for i in 1 2 3; do
-                HOST_VAR="SERVER${i}_HOST"; HOST="${!HOST_VAR:-}"
-                if [ -z "$HOST" ]; then
-                  continue
-                fi
-                USER_VAR="SERVER${i}_USER"; PASS_VAR="SERVER${i}_PASS"; RB_VAR="SERVER${i}_REMOTE_BASE"; PORT_VAR="SERVER${i}_PORT"
-                USER="${!USER_VAR:-}"; PASS="${!PASS_VAR:-}"; REMOTE_BASE="${!RB_VAR:-}"; PORT="${!PORT_VAR:-22}"
-                if [ -z "$USER" ] || [ -z "$PASS" ] || [ -z "$REMOTE_BASE" ]; then
-                  echo "Skipping server $i because required variables not set (USER/PASS/REMOTE_BASE)."
-                  continue
-                fi
-                remove_file "$HOST" "$USER" "$PASS" "$REMOTE_BASE" "$PORT" "$relpath"
-              done
+              echo "  File DOES NOT exist in workspace path '$f'"
             fi
 
+            # Show git presence check
+            if git --no-pager ls-files --error-unmatch "$f" >/dev/null 2>&1; then
+              echo "  Present in index/commit"
+            else
+              echo "  NOT present in index/commit"
+            fi
+
+            # For each configured server, print what we'd do
+            for i in 1 2 3; do
+              HOST_VAR="SERVER${i}_HOST"; HOST="${!HOST_VAR:-}"
+              if [ -z "$HOST" ]; then
+                continue
+              fi
+              USER_VAR="SERVER${i}_USER"; PASS_VAR="SERVER${i}_PASS"; RB_VAR="SERVER${i}_REMOTE_BASE"; PORT_VAR="SERVER${i}_PORT"
+              USER="${!USER_VAR:-}"; PASS="${!PASS_VAR:-}"; REMOTE_BASE="${!RB_VAR:-}"; PORT="${!PORT_VAR:-22}"
+              if [ -z "$USER" ] || [ -z "$PASS" ] || [ -z "$REMOTE_BASE" ]; then
+                echo "  Server $i missing USER/PASS/REMOTE_BASE — skipping"
+                continue
+              fi
+
+              target="${REMOTE_BASE%/}/$relpath"
+              if [ -f "$f" ]; then
+                if [ "$DRY_RUN" = "true" ]; then
+                  echo "  [DRY] Would upload to server${i}: $HOST ($USER) -> $target"
+                else
+                  echo "  Uploading to server${i}: $HOST ($USER) -> $target"
+                  sshpass -p "$PASS" ssh -p "${PORT:-22}" -o StrictHostKeyChecking=no "$USER@$HOST" "mkdir -p '$(dirname "$target")'"
+                  sshpass -p "$PASS" scp -P "${PORT:-22}" -p "$f" "$USER@$HOST:$target"
+                fi
+              else
+                if [ "$DRY_RUN" = "true" ]; then
+                  echo "  [DRY] Would remove remote file on server${i}: $target (local file missing)"
+                else
+                  echo "  Removing remote file on server${i}: $target"
+                  sshpass -p "$PASS" ssh -p "${PORT:-22}" -o StrictHostKeyChecking=no "$USER@$HOST" "rm -f '$target' || true"
+                fi
+              fi
+            done
+
+            echo "----"
           done < changed.txt
 
       - name: "Summary"
