@@ -1,0 +1,2 @@
+# DoD-S-Stripper-Source-Config-Files
+Collection of files to fix bugs and add features to Day of Defeat Source maps
