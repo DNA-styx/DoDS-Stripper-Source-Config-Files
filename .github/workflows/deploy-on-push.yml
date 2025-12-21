@@ -1,4 +1,4 @@
-name: Deploy changed .cfg files via SFTP (commit-based, push-only)
+name: Deploy changed .cfg files via SFTP (simplified)
 
 on:
   push:
@@ -12,7 +12,6 @@ jobs:
     env:
       # Path in the repo containing the .cfg files to deploy
       REPO_PREFIX: 'addons/sourcemod/configs/stripper'
-      VERBOSE: 'true'
 
       # Server 1 (required)
       SERVER1_HOST: ${{ secrets.SERVER1_HOST }}
@@ -43,24 +42,22 @@ jobs:
 
       - name: Install sshpass
         run: |
-          sudo apt-get update
+          sudo apt-get update -y
           sudo apt-get install -y sshpass
 
-      - name: Determine changed .cfg files (push / changed mode)
+      - name: Determine changed .cfg files
         id: changed
         env:
           BEFORE: ${{ github.event.before }}
           AFTER: ${{ github.sha }}
         run: |
           set -euo pipefail
-          # For push-triggered runs we operate in "changed" mode:
-          RUN_MODE='changed'
+          REPO_PREFIX="${REPO_PREFIX%/}"
           BEFORE="${BEFORE}"
           AFTER="${AFTER}"
-          REPO_PREFIX="${REPO_PREFIX%/}"
-          echo "RUN_MODE=$RUN_MODE BEFORE=$BEFORE AFTER=$AFTER REPO_PREFIX=$REPO_PREFIX"
+          echo "BEFORE=$BEFORE AFTER=$AFTER REPO_PREFIX=$REPO_PREFIX"
 
-          # Ensure we have relevant commits locally
+          # Ensure commits are available
           git fetch --no-tags --prune origin || true
           if [ -n "$BEFORE" ] && [ "$BEFORE" != "0000000000000000000000000000000000000000" ]; then
             git fetch origin "$BEFORE":"refs/remotes/origin/$BEFORE" || true
@@ -69,44 +66,41 @@ jobs:
             git fetch origin "$AFTER":"refs/remotes/origin/$AFTER" || true
           fi
 
-          # CHANGED mode (push): diff between BEFORE and AFTER, filtered to .cfg under prefix
-          (git --no-pager diff --name-only "$BEFORE" "$AFTER" \
+          # List changed .cfg files between BEFORE and AFTER (push runs are "changed" mode)
+          git --no-pager diff --name-only "$BEFORE" "$AFTER" \
             | grep -E -i "^${REPO_PREFIX}(/|$)" \
-            | grep -E -i '\.cfg$') > changed.txt || true
+            | grep -E -i '\.cfg$' > changed.txt || true
 
-          # Fallback: if diff produced nothing, list .cfg files from AFTER commit under prefix
+          # Fallback: if no diffs found, list all .cfg files under prefix in AFTER commit
           if [ ! -s changed.txt ]; then
-            (git ls-tree -r --name-only "${AFTER}" \
+            git ls-tree -r --name-only "${AFTER}" \
               | grep -E -i "^${REPO_PREFIX}(/|$)" \
-              | grep -E -i '\.cfg$') > changed.txt || true
+              | grep -E -i '\.cfg$' > changed.txt || true
           fi
 
+          # Ensure changed.txt exists (possibly empty)
           touch changed.txt
-          echo "Changed .cfg files:"
-          nl -ba changed.txt || true
+          echo "Changed files:"
+          sed -n '1,200p' changed.txt || true
           echo "files=$(wc -l < changed.txt || true)" >> "$GITHUB_OUTPUT"
 
-      - name: Upload / remove changed .cfg files (from commit content)
+      - name: Upload / remove changed .cfg files (from commit)
         if: ${{ always() }}
         env:
           AFTER: ${{ github.sha }}
         run: |
-          set -u
+          set -euo pipefail
           REPO_PREFIX="${REPO_PREFIX%/}"
           AFTER="${AFTER}"
 
           if [ ! -s changed.txt ]; then
-            echo "No .cfg files matched under prefix '$REPO_PREFIX'. Nothing to do."
+            echo "No .cfg files to process; exiting."
             exit 0
           fi
 
-          nl -ba changed.txt || true
-          echo "----"
-
           while IFS= read -r f || [ -n "$f" ]; do
             [ -z "$f" ] && continue
-            echo "Processing: '$f'"
-
+            # compute relpath relative to REPO_PREFIX
             case "$f" in
               "$REPO_PREFIX" | "$REPO_PREFIX/"* )
                 if [ "$f" = "$REPO_PREFIX" ]; then
@@ -116,105 +110,63 @@ jobs:
                 fi
                 ;;
               *)
-                echo "  Skipping (not under REPO_PREFIX)"
+                echo "Skipping (not under REPO_PREFIX): $f"
                 continue
                 ;;
             esac
 
-            echo "  relpath='$relpath'"
-
+            # only handle .cfg files
             if ! echo "$relpath" | grep -E -i '\.cfg$' >/dev/null 2>&1; then
-              echo "  Skipping (not .cfg)"
+              echo "Skipping (not .cfg): $f"
               continue
             fi
 
-            # Check file exists in AFTER commit object
+            # If file exists in AFTER commit, extract and upload. Otherwise remove remote.
             if git cat-file -e "${AFTER}:$f" 2>/dev/null; then
-              echo "  Present in AFTER commit — uploading from commit object"
+              echo "Uploading ${f} -> ${relpath}"
+              tmpf="$(mktemp)" || (echo "mktemp failed"; exit 1)
+              if ! git show "${AFTER}:$f" > "$tmpf"; then
+                echo "git show failed for ${f}; skipping"
+                rm -f "$tmpf"
+                continue
+              fi
 
               for i in 1 2 3; do
                 HOST_VAR="SERVER${i}_HOST"; HOST="${!HOST_VAR:-}"
-                if [ -z "$HOST" ]; then
-                  continue
-                fi
+                [ -z "$HOST" ] && continue
                 USER_VAR="SERVER${i}_USER"; PASS_VAR="SERVER${i}_PASS"; RB_VAR="SERVER${i}_REMOTE_BASE"; PORT_VAR="SERVER${i}_PORT"
                 USER="${!USER_VAR:-}"; PASS="${!PASS_VAR:-}"; REMOTE_BASE="${!RB_VAR:-}"; PORT="${!PORT_VAR:-22}"
                 if [ -z "$USER" ] || [ -z "$PASS" ] || [ -z "$REMOTE_BASE" ]; then
-                  echo "  Server $i missing USER/PASS/REMOTE_BASE — skipping"
+                  echo "Server $i missing credentials or remote base; skipping"
                   continue
                 fi
 
                 remote_target="${REMOTE_BASE%/}/$relpath"
                 remote_dir="$(dirname "$remote_target")"
 
-                echo "  Server $i: host=$HOST user=$USER target=$remote_target"
-
-                # Ensure remote dir
-                mkdir_out="$(sshpass -p "$PASS" ssh -p "${PORT:-22}" -o StrictHostKeyChecking=no "$USER@$HOST" "mkdir -p '$remote_dir'" 2>&1)"
-                mkdir_rc=$?
-                echo "    mkdir rc=$mkdir_rc"
-                if [ -n "$mkdir_out" ]; then
-                  echo "    mkdir output:"
-                  sed -n '1,200p' <(printf '%s\n' "$mkdir_out") || true
-                fi
-
-                # Extract file from commit into temp file
-                tmpf="$(mktemp)" || { echo "    mktemp failed"; continue; }
-                git_show_err="/tmp/gitshow.err.$$"
-                git show "${AFTER}:$f" > "$tmpf" 2> "$git_show_err"
-                git_show_rc=$?
-                if [ $git_show_rc -ne 0 ]; then
-                  echo "    git show failed rc=$git_show_rc ; stderr:"
-                  sed -n '1,200p' "$git_show_err" || true
-                  rm -f "$git_show_err" "$tmpf"
-                  echo "    Skipping upload for this file/server"
-                  continue
-                else
-                  echo "    git show OK (size: $(stat -c%s "$tmpf") bytes)"
-                fi
-
-                # scp the temp file to remote
-                scp_err="/tmp/scp.err.$$"
-                echo "    scp $tmpf -> $USER@$HOST:$remote_target"
-                sshpass -p "$PASS" scp -P "${PORT:-22}" -p "$tmpf" "$USER@$HOST:$remote_target" 2> "$scp_err"
-                scp_rc=$?
-                if [ $scp_rc -ne 0 ]; then
-                  echo "    scp FAILED rc=$scp_rc ; stderr:"
-                  sed -n '1,200p' "$scp_err" || true
-                else
-                  echo "    scp succeeded"
-                fi
-                rm -f "$scp_err" "$tmpf" "$git_show_err" || true
+                # create remote directory and upload
+                sshpass -p "$PASS" ssh -p "${PORT:-22}" -o StrictHostKeyChecking=no "$USER@$HOST" "mkdir -p '$remote_dir'"
+                sshpass -p "$PASS" scp -P "${PORT:-22}" -p "$tmpf" "$USER@$HOST:$remote_target"
+                echo "  -> uploaded to $HOST:$remote_target"
               done
+
+              rm -f "$tmpf"
 
             else
-              echo "  NOT present in AFTER commit (treated as deleted) — removing remote entries"
+              echo "Remote removal: ${f} (not present in AFTER)"
               for i in 1 2 3; do
                 HOST_VAR="SERVER${i}_HOST"; HOST="${!HOST_VAR:-}"
-                if [ -z "$HOST" ]; then
-                  continue
-                fi
+                [ -z "$HOST" ] && continue
                 USER_VAR="SERVER${i}_USER"; PASS_VAR="SERVER${i}_PASS"; RB_VAR="SERVER${i}_REMOTE_BASE"; PORT_VAR="SERVER${i}_PORT"
                 USER="${!USER_VAR:-}"; PASS="${!PASS_VAR:-}"; REMOTE_BASE="${!RB_VAR:-}"; PORT="${!PORT_VAR:-22}"
-                if [ -z "$USER" ] || [ -z "$PASS" ] || [ -z "$REMOTE_BASE" ]; then
-                  echo "  Server $i missing USER/PASS/REMOTE_BASE — skipping"
-                  continue
-                fi
+                [ -z "$USER" ] || [ -z "$PASS" ] || [ -z "$REMOTE_BASE" ] && { echo "Server $i missing credentials or remote base; skipping"; continue; }
                 remote_target="${REMOTE_BASE%/}/$relpath"
-                rm_out="$(sshpass -p "$PASS" ssh -p "${PORT:-22}" -o StrictHostKeyChecking=no "$USER@$HOST" "rm -f '$remote_target' || true" 2>&1)"
-                rm_rc=$?
-                echo "    remote rm rc=$rm_rc"
-                if [ -n "$rm_out" ]; then
-                  echo "    remote rm output:"
-                  sed -n '1,200p' <(printf '%s\n' "$rm_out") || true
-                fi
+                sshpass -p "$PASS" ssh -p "${PORT:-22}" -o StrictHostKeyChecking=no "$USER@$HOST" "rm -f '$remote_target' || true"
+                echo "  -> removed $HOST:$remote_target"
               done
             fi
-
-            echo "----"
           done < changed.txt
 
-      - name: "Summary"
-        if: ${{ always() }}
+      - name: Summary
         run: |
-          echo "Workflow finished. All matched .cfg files were processed (uploaded or removed)."
+          echo "Workflow finished. Processed files listed in changed.txt."
