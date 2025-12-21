@@ -1,4 +1,4 @@
-name: Deploy changed .cfg files via SFTP
+name: Deploy changed .cfg files via SFTP 
 
 on:
   push:
