@@ -1,0 +1,240 @@
+name: Deploy changed .cfg files via SFTP
+
+on:
+  push:
+    branches:
+      - main           # change to your deploy branch if needed
+  workflow_dispatch:
+    inputs:
+      run_mode:
+        description: 'Run mode: "changed" (only files changed in the push) or "full" (upload all tracked .cfg files under REPO_PREFIX).'
+        required: false
+        default: 'full'
+      dry_run:
+        description: 'If "true", only print actions (no ssh/scp). Useful for testing.'
+        required: false
+        default: 'true'
+      ref:
+        description: 'Branch/ref to checkout when running manually (optional).'
+        required: false
+        default: 'main'
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    # Repo-specific prefix: files under this path in the repo will be mapped to the remote base.
+    # Example for your repo: files/addons/sourcemod/configs/stripper
+    env:
+      REPO_PREFIX: 'files/addons/sourcemod/configs/stripper'
+      VERBOSE: 'true'
+
+      # Server 1 (required for initial testing)
+      SERVER1_HOST: ${{ secrets.SERVER1_HOST }}
+      SERVER1_USER: ${{ secrets.SERVER1_USER }}
+      SERVER1_PASS: ${{ secrets.SERVER1_PASS }}
+      SERVER1_REMOTE_BASE: ${{ secrets.SERVER1_REMOTE_BASE }}
+      SERVER1_PORT: ${{ secrets.SERVER1_PORT }}
+
+      # Server 2 (optional)
+      SERVER2_HOST: ${{ secrets.SERVER2_HOST }}
+      SERVER2_USER: ${{ secrets.SERVER2_USER }}
+      SERVER2_PASS: ${{ secrets.SERVER2_PASS }}
+      SERVER2_REMOTE_BASE: ${{ secrets.SERVER2_REMOTE_BASE }}
+      SERVER2_PORT: ${{ secrets.SERVER2_PORT }}
+
+      # Server 3 (optional)
+      SERVER3_HOST: ${{ secrets.SERVER3_HOST }}
+      SERVER3_USER: ${{ secrets.SERVER3_USER }}
+      SERVER3_PASS: ${{ secrets.SERVER3_PASS }}
+      SERVER3_REMOTE_BASE: ${{ secrets.SERVER3_REMOTE_BASE }}
+      SERVER3_PORT: ${{ secrets.SERVER3_PORT }}
+
+    steps:
+      - name: Checkout repository (full history)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Optionally checkout requested ref (workflow_dispatch)
+        if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.ref != '' }}
+        run: |
+          REF="${{ github.event.inputs.ref }}"
+          echo "workflow_dispatch requested ref: $REF"
+          git fetch origin "$REF" --depth=1 || true
+          git checkout "$REF" || git checkout -b "$REF" "origin/$REF" || true
+
+      - name: Install sshpass (for password-based non-interactive sftp/scp)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y sshpass
+
+      - name: Determine changed .cfg files
+        id: changed
+        env:
+          RUN_MODE: ${{ github.event.inputs.run_mode }}
+          BEFORE: ${{ github.event.before }}
+          AFTER: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          RUN_MODE="${RUN_MODE:-changed}"
+          echo "Run mode: $RUN_MODE"
+          echo "Repo prefix: $REPO_PREFIX"
+
+          # Ensure prefix has no trailing slash for stable matching
+          REPO_PREFIX="${REPO_PREFIX%/}"
+
+          # Only include files that end with .cfg (case-insensitive)
+          if [ "$RUN_MODE" = "full" ]; then
+            echo "Listing all tracked .cfg files under '$REPO_PREFIX'..."
+            git ls-files | grep -E -i "^${REPO_PREFIX}(/|$)" | grep -E -i '\.cfg$' || true > changed.txt
+          else
+            BEFORE="${BEFORE}"
+            AFTER="${AFTER}"
+            if [ -z "$BEFORE" ] || [ "$BEFORE" = "0000000000000000000000000000000000000000" ]; then
+              echo "No valid 'before' SHA (initial push or manual). Falling back to full listing."
+              git ls-files | grep -E -i "^${REPO_PREFIX}(/|$)" | grep -E -i '\.cfg$' || true > changed.txt
+            else
+              echo "Listing changed .cfg files between $BEFORE and $AFTER"
+              git --no-pager diff --name-only "$BEFORE" "$AFTER" | grep -E -i "^${REPO_PREFIX}(/|$)" | grep -E -i '\.cfg$' || true > changed.txt
+            fi
+          fi
+
+          if [ ! -f changed.txt ]; then
+            echo "No changed.txt produced (no matching files). Creating empty changed.txt"
+            touch changed.txt
+          fi
+
+          echo "Changed .cfg files (matched):"
+          sed -n '1,200p' changed.txt || true
+          echo "::set-output name=files::$(wc -l < changed.txt || true)"
+
+      - name: Upload / remove changed .cfg files to configured servers
+        if: ${{ always() }}
+        env:
+          DRY_RUN: ${{ github.event.inputs.dry_run }}
+        run: |
+          set -euo pipefail
+          DRY_RUN="${DRY_RUN:-true}"
+          REPO_PREFIX="${REPO_PREFIX%/}"
+
+          if [ "${VERBOSE:-false}" = "true" ]; then
+            echo "Environment summary:"
+            echo " REPO_PREFIX = $REPO_PREFIX"
+            echo " DRY_RUN = $DRY_RUN"
+            for i in 1 2 3; do
+              HOST_VAR="SERVER${i}_HOST"
+              HOST="${!HOST_VAR:-}"
+              if [ -n "$HOST" ]; then
+                RB_VAR="SERVER${i}_REMOTE_BASE"
+                U_VAR="SERVER${i}_USER"
+                P_VAR="SERVER${i}_PORT"
+                echo " SERVER${i}: host=$HOST remote_base=${!RB_VAR:-} user=${!U_VAR:-} port=${!P_VAR:-22}"
+              fi
+            done
+            echo "----"
+          fi
+
+          if [ ! -f changed.txt ] || [ ! -s changed.txt ]; then
+            echo "No .cfg files matched under prefix '$REPO_PREFIX'. Nothing to do."
+            exit 0
+          fi
+
+          upload_file() {
+            local host="$1" user="$2" pass="$3" remote_base="$4" port="$5" local_file="$6" relpath="$7"
+            remote_base="${remote_base%/}"
+            remote_dir="$(dirname "${remote_base}/${relpath}")"
+            if [ "$DRY_RUN" = "true" ]; then
+              echo "[DRY] Would ensure remote dir: $host:$remote_dir"
+              echo "[DRY] Would upload: $local_file -> $host:$remote_base/$relpath"
+            else
+              echo "Ensuring remote dir on $host: $remote_dir"
+              sshpass -p "$pass" ssh -p "${port:-22}" -o StrictHostKeyChecking=no "$user@$host" "mkdir -p '$remote_dir'"
+              echo "Uploading $local_file -> $host:$remote_base/$relpath"
+              sshpass -p "$pass" scp -P "${port:-22}" -p "$local_file" "$user@$host:$remote_base/$relpath"
+            fi
+          }
+
+          remove_file() {
+            local host="$1" user="$2" pass="$3" remote_base="$4" port="$5" relpath="$6"
+            remote_base="${remote_base%/}"
+            if [ "$DRY_RUN" = "true" ]; then
+              echo "[DRY] Would remove: $host:$remote_base/$relpath"
+            else
+              echo "Removing remote file $host:$remote_base/$relpath"
+              sshpass -p "$pass" ssh -p "${port:-22}" -o StrictHostKeyChecking=no "$user@$host" "rm -f '$remote_base/$relpath' || true"
+            fi
+          }
+
+          while IFS= read -r f || [ -n "$f" ]; do
+            [ -z "$f" ] && continue
+
+            # Only process files under REPO_PREFIX
+            case "$f" in
+              "$REPO_PREFIX" | "$REPO_PREFIX/"* )
+                if [ "$f" = "$REPO_PREFIX" ]; then
+                  relpath="$(basename "$f")"
+                else
+                  relpath="${f#${REPO_PREFIX}/}"
+                fi
+                ;;
+              *)
+                echo "Skipping $f (not under $REPO_PREFIX)"
+                continue
+                ;;
+            esac
+
+            # Only .cfg files should be here; sanity-check case-insensitive
+            if ! echo "$relpath" | grep -E -i '\.cfg$' >/dev/null 2>&1; then
+              echo "Skipping $f (not a .cfg file)"
+              continue
+            fi
+
+            # Determine if file exists at current commit (present) or was deleted
+            if git --no-pager ls-files --error-unmatch "$f" >/dev/null 2>&1; then
+              # present -> upload (only if regular file exists in workspace)
+              if [ -f "$f" ]; then
+                echo "Preparing to upload: $f (remote relpath: $relpath)"
+                for i in 1 2 3; do
+                  HOST_VAR="SERVER${i}_HOST"; HOST="${!HOST_VAR:-}"
+                  if [ -z "$HOST" ]; then
+                    continue
+                  fi
+                  USER_VAR="SERVER${i}_USER"; PASS_VAR="SERVER${i}_PASS"; RB_VAR="SERVER${i}_REMOTE_BASE"; PORT_VAR="SERVER${i}_PORT"
+                  USER="${!USER_VAR:-}"; PASS="${!PASS_VAR:-}"; REMOTE_BASE="${!RB_VAR:-}"; PORT="${!PORT_VAR:-22}"
+                  if [ -z "$USER" ] || [ -z "$PASS" ] || [ -z "$REMOTE_BASE" ]; then
+                    echo "Skipping server $i because required variables not set (USER/PASS/REMOTE_BASE)."
+                    continue
+                  fi
+                  upload_file "$HOST" "$USER" "$PASS" "$REMOTE_BASE" "$PORT" "$f" "$relpath"
+                done
+              else
+                echo "Skipping $f (not a regular file in workspace)"
+              fi
+            else
+              # deleted -> remove remote
+              echo "Detected delete for $f -> removing remote $relpath"
+              for i in 1 2 3; do
+                HOST_VAR="SERVER${i}_HOST"; HOST="${!HOST_VAR:-}"
+                if [ -z "$HOST" ]; then
+                  continue
+                fi
+                USER_VAR="SERVER${i}_USER"; PASS_VAR="SERVER${i}_PASS"; RB_VAR="SERVER${i}_REMOTE_BASE"; PORT_VAR="SERVER${i}_PORT"
+                USER="${!USER_VAR:-}"; PASS="${!PASS_VAR:-}"; REMOTE_BASE="${!RB_VAR:-}"; PORT="${!PORT_VAR:-22}"
+                if [ -z "$USER" ] || [ -z "$PASS" ] || [ -z "$REMOTE_BASE" ]; then
+                  echo "Skipping server $i because required variables not set (USER/PASS/REMOTE_BASE)."
+                  continue
+                fi
+                remove_file "$HOST" "$USER" "$PASS" "$REMOTE_BASE" "$PORT" "$relpath"
+              done
+            fi
+
+          done < changed.txt
+
+      - name: Summary
+        if: ${{ always() }}
+        run: |
+          echo "Workflow finished. Check above logs for upload/remove actions."
+          if [ "${{ github.event.inputs.dry_run }}" = "true" ]; then
+            echo "This was a dry run. Set 'dry_run' input to 'false' in workflow_dispatch to perform real uploads."
+          fi
