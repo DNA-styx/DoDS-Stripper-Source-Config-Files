@@ -1,9 +1,12 @@
-name: Deploy changed .cfg files via SFTP (simplified)
+name: Deploy changed .cfg files via SFTP (push-only, path-filtered)
 
 on:
   push:
     branches:
       - main
+    # only trigger when files under this path (or its subfolders) change
+    paths:
+      - 'addons/sourcemod/configs/stripper/**'
 
 jobs:
   deploy:
@@ -66,21 +69,20 @@ jobs:
             git fetch origin "$AFTER":"refs/remotes/origin/$AFTER" || true
           fi
 
-          # List changed .cfg files between BEFORE and AFTER (push runs are "changed" mode)
+          # Get changed .cfg files between BEFORE and AFTER (push runs are "changed" mode)
           git --no-pager diff --name-only "$BEFORE" "$AFTER" \
             | grep -E -i "^${REPO_PREFIX}(/|$)" \
             | grep -E -i '\.cfg$' > changed.txt || true
 
-          # Fallback: if no diffs found, list all .cfg files under prefix in AFTER commit
+          # Fallback: if diff produced nothing, list .cfg files in AFTER commit under prefix
           if [ ! -s changed.txt ]; then
             git ls-tree -r --name-only "${AFTER}" \
               | grep -E -i "^${REPO_PREFIX}(/|$)" \
               | grep -E -i '\.cfg$' > changed.txt || true
           fi
 
-          # Ensure changed.txt exists (possibly empty)
           touch changed.txt
-          echo "Changed files:"
+          echo "Changed files (changed.txt):"
           sed -n '1,200p' changed.txt || true
           echo "files=$(wc -l < changed.txt || true)" >> "$GITHUB_OUTPUT"
 
@@ -100,6 +102,7 @@ jobs:
 
           while IFS= read -r f || [ -n "$f" ]; do
             [ -z "$f" ] && continue
+
             # compute relpath relative to REPO_PREFIX
             case "$f" in
               "$REPO_PREFIX" | "$REPO_PREFIX/"* )
@@ -124,7 +127,7 @@ jobs:
             # If file exists in AFTER commit, extract and upload. Otherwise remove remote.
             if git cat-file -e "${AFTER}:$f" 2>/dev/null; then
               echo "Uploading ${f} -> ${relpath}"
-              tmpf="$(mktemp)" || (echo "mktemp failed"; exit 1)
+              tmpf="$(mktemp)" || (echo "mktemp failed" && exit 1)
               if ! git show "${AFTER}:$f" > "$tmpf"; then
                 echo "git show failed for ${f}; skipping"
                 rm -f "$tmpf"
@@ -144,7 +147,6 @@ jobs:
                 remote_target="${REMOTE_BASE%/}/$relpath"
                 remote_dir="$(dirname "$remote_target")"
 
-                # create remote directory and upload
                 sshpass -p "$PASS" ssh -p "${PORT:-22}" -o StrictHostKeyChecking=no "$USER@$HOST" "mkdir -p '$remote_dir'"
                 sshpass -p "$PASS" scp -P "${PORT:-22}" -p "$tmpf" "$USER@$HOST:$remote_target"
                 echo "  -> uploaded to $HOST:$remote_target"
@@ -153,7 +155,7 @@ jobs:
               rm -f "$tmpf"
 
             else
-              echo "Remote removal: ${f} (not present in AFTER)"
+              echo "Removing remote: ${f} (not present in AFTER)"
               for i in 1 2 3; do
                 HOST_VAR="SERVER${i}_HOST"; HOST="${!HOST_VAR:-}"
                 [ -z "$HOST" ] && continue
@@ -165,6 +167,7 @@ jobs:
                 echo "  -> removed $HOST:$remote_target"
               done
             fi
+
           done < changed.txt
 
       - name: Summary
