@@ -24,11 +24,11 @@ jobs:
     runs-on: ubuntu-latest
 
     env:
-      # Set this to the path inside your repo that contains the .cfg files
+      # Path in repo that contains the .cfg files
       REPO_PREFIX: 'addons/sourcemod/configs/stripper'
       VERBOSE: 'true'
 
-      # Server 1 (required for initial testing)
+      # Server 1 (required)
       SERVER1_HOST: ${{ secrets.SERVER1_HOST }}
       SERVER1_USER: ${{ secrets.SERVER1_USER }}
       SERVER1_PASS: ${{ secrets.SERVER1_PASS }}
@@ -68,11 +68,10 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y sshpass
 
-      - name: Debug: show tracked files & prefix (runs in dry_run mode)
-        if: ${{ github.event.inputs.dry_run == 'true' }}
+      - name: "Debug: show tracked files & prefix (always runs, safe)"
         run: |
           echo "REPO_PREFIX = '${REPO_PREFIX}'"
-          echo "Current branch:"
+          echo "Current Git branch:"
           git rev-parse --abbrev-ref HEAD || true
           echo
           echo "Top 200 tracked files:"
@@ -99,7 +98,6 @@ jobs:
           RUN_MODE="${RUN_MODE:-changed}"
           echo "Run mode: $RUN_MODE"
           echo "Repo prefix: $REPO_PREFIX"
-
           REPO_PREFIX="${REPO_PREFIX%/}"
 
           if [ "$RUN_MODE" = "full" ]; then
@@ -147,7 +145,6 @@ jobs:
                 RB_VAR="SERVER${i}_REMOTE_BASE"
                 U_VAR="SERVER${i}_USER"
                 P_VAR="SERVER${i}_PORT"
-                # print a short summary (do not echo secrets)
                 echo " SERVER${i}: host=$HOST remote_base=${!RB_VAR:-} user=${!U_VAR:-} port=${!P_VAR:-22}"
               fi
             done
