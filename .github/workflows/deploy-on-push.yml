@@ -24,7 +24,7 @@ jobs:
     runs-on: ubuntu-latest
 
     env:
-      # Set this to the path in the repo that contains the .cfg files to deploy
+      # Path inside your repo that contains the .cfg files to deploy
       REPO_PREFIX: 'addons/sourcemod/configs/stripper'
       VERBOSE: 'true'
 
@@ -50,12 +50,12 @@ jobs:
       SERVER3_PORT: ${{ secrets.SERVER3_PORT }}
 
     steps:
-      - name: Checkout repository (full history)
+      - name: "Checkout repository (full history)"
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Optionally checkout requested ref (workflow_dispatch)
+      - name: "Optionally checkout requested ref (workflow_dispatch)"
         if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.ref != '' }}
         run: |
           REF="${{ github.event.inputs.ref }}"
@@ -63,12 +63,12 @@ jobs:
           git fetch origin "$REF" --depth=1 || true
           git checkout "$REF" || git checkout -b "$REF" "origin/$REF" || true
 
-      - name: Install sshpass (for password-based non-interactive sftp/scp)
+      - name: "Install sshpass (for password-based non-interactive sftp/scp)"
         run: |
           sudo apt-get update
           sudo apt-get install -y sshpass
 
-      - name: Debug: show tracked files & prefix (always runs)
+      - name: "Debug: show tracked files & prefix (always runs, safe)"
         run: |
           echo "REPO_PREFIX = '${REPO_PREFIX}'"
           echo "Current Git branch:"
@@ -87,7 +87,7 @@ jobs:
             echo "Local dir ${REPO_PREFIX} does not exist."
           fi
 
-      - name: Determine changed .cfg files (robust + verbose)
+      - name: "Determine changed .cfg files (robust + verbose)"
         id: changed
         env:
           RUN_MODE: ${{ github.event.inputs.run_mode }}
@@ -117,7 +117,7 @@ jobs:
           git ls-tree -r --name-only "${AFTER}" | sed -n '1,200p' || true
           echo "----"
 
-          # Build changed.txt (capture pipelines output safely)
+          # Build changed.txt (capture pipeline output safely)
           if [ "$RUN_MODE" = "full" ] || [ -z "$BEFORE" ] || [ "$BEFORE" = "0000000000000000000000000000000000000000" ]; then
             echo "FULL mode or initial commit — listing all .cfg files under REPO_PREFIX in AFTER commit"
             (git ls-tree -r --name-only "${AFTER}" \
@@ -147,7 +147,7 @@ jobs:
           echo "Count: $(wc -l < changed.txt || true)"
           echo "files=$(wc -l < changed.txt || true)" >> "$GITHUB_OUTPUT"
 
-      - name: Upload / remove changed .cfg files to configured servers (from commit content)
+      - name: "Upload / remove changed .cfg files to configured servers (from commit content)"
         if: ${{ always() }}
         env:
           DRY_RUN: ${{ github.event.inputs.dry_run }}
@@ -220,7 +220,6 @@ jobs:
 
                   # Write file from commit to a temp file and scp it
                   tmpf="$(mktemp)"
-                  # Ensure git show succeeds; if not, remove tmp and continue
                   if git show "${AFTER}:$f" > "$tmpf" 2>/dev/null; then
                     sshpass -p "$PASS" scp -P "${PORT:-22}" -p "$tmpf" "$USER@$HOST:$remote_target"
                     echo "  Uploaded to server${i}: $remote_target"
@@ -257,7 +256,7 @@ jobs:
             echo "----"
           done < changed.txt
 
-      - name: Summary
+      - name: "Summary"
         if: ${{ always() }}
         run: |
           echo "Workflow finished. Check logs above for upload/remove actions."
