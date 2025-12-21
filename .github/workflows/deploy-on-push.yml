@@ -3,7 +3,7 @@ name: Deploy changed .cfg files via SFTP
 on:
   push:
     branches:
-      - main           # change to your deploy branch if needed
+      - main
   workflow_dispatch:
     inputs:
       run_mode:
@@ -24,8 +24,7 @@ jobs:
     runs-on: ubuntu-latest
 
     env:
-      # UPDATED: repo prefix for your repo layout (you said files live under
-      # addons/sourcemod/configs/stripper)
+      # Set this to the path inside your repo that contains the .cfg files
       REPO_PREFIX: 'addons/sourcemod/configs/stripper'
       VERBOSE: 'true'
 
@@ -69,7 +68,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y sshpass
 
-      - name: Debug: show tracked files & prefix (helpful if no matches)
+      - name: Debug: show tracked files & prefix (runs in dry_run mode)
         if: ${{ github.event.inputs.dry_run == 'true' }}
         run: |
           echo "REPO_PREFIX = '${REPO_PREFIX}'"
@@ -148,6 +147,7 @@ jobs:
                 RB_VAR="SERVER${i}_REMOTE_BASE"
                 U_VAR="SERVER${i}_USER"
                 P_VAR="SERVER${i}_PORT"
+                # print a short summary (do not echo secrets)
                 echo " SERVER${i}: host=$HOST remote_base=${!RB_VAR:-} user=${!U_VAR:-} port=${!P_VAR:-22}"
               fi
             done
