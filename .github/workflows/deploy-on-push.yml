@@ -1,4 +1,4 @@
-name: Deploy changed .cfg files via SFTP 
+name: Deploy changed .cfg files via SFTP
 
 on:
   push:
@@ -23,10 +23,10 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
 
-    # Repo-specific prefix: files under this path in the repo will be mapped to the remote base.
-    # Example for your repo: files/addons/sourcemod/configs/stripper
     env:
-      REPO_PREFIX: 'files/addons/sourcemod/configs/stripper'
+      # UPDATED: repo prefix for your repo layout (you said files live under
+      # addons/sourcemod/configs/stripper)
+      REPO_PREFIX: 'addons/sourcemod/configs/stripper'
       VERBOSE: 'true'
 
       # Server 1 (required for initial testing)
@@ -69,6 +69,26 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y sshpass
 
+      - name: Debug: show tracked files & prefix (helpful if no matches)
+        if: ${{ github.event.inputs.dry_run == 'true' }}
+        run: |
+          echo "REPO_PREFIX = '${REPO_PREFIX}'"
+          echo "Current branch:"
+          git rev-parse --abbrev-ref HEAD || true
+          echo
+          echo "Top 200 tracked files:"
+          git ls-files | sed -n '1,200p' || true
+          echo
+          echo "Files matching REPO_PREFIX (${REPO_PREFIX}):"
+          git ls-files | grep -E -i "^${REPO_PREFIX}(/|$)" || true
+          echo
+          if [ -d "${REPO_PREFIX}" ]; then
+            echo "Local dir ${REPO_PREFIX} exists — listing:"
+            ls -la "${REPO_PREFIX}" || true
+          else
+            echo "Local dir ${REPO_PREFIX} does not exist."
+          fi
+
       - name: Determine changed .cfg files
         id: changed
         env:
@@ -81,10 +101,8 @@ jobs:
           echo "Run mode: $RUN_MODE"
           echo "Repo prefix: $REPO_PREFIX"
 
-          # Ensure prefix has no trailing slash for stable matching
           REPO_PREFIX="${REPO_PREFIX%/}"
 
-          # Only include files that end with .cfg (case-insensitive)
           if [ "$RUN_MODE" = "full" ]; then
             echo "Listing all tracked .cfg files under '$REPO_PREFIX'..."
             git ls-files | grep -E -i "^${REPO_PREFIX}(/|$)" | grep -E -i '\.cfg$' || true > changed.txt
@@ -101,13 +119,14 @@ jobs:
           fi
 
           if [ ! -f changed.txt ]; then
-            echo "No changed.txt produced (no matching files). Creating empty changed.txt"
             touch changed.txt
           fi
 
           echo "Changed .cfg files (matched):"
           sed -n '1,200p' changed.txt || true
-          echo "::set-output name=files::$(wc -l < changed.txt || true)"
+
+          files_count="$(wc -l < changed.txt || true)"
+          echo "files=${files_count}" >> "$GITHUB_OUTPUT"
 
       - name: Upload / remove changed .cfg files to configured servers
         if: ${{ always() }}
@@ -169,7 +188,6 @@ jobs:
           while IFS= read -r f || [ -n "$f" ]; do
             [ -z "$f" ] && continue
 
-            # Only process files under REPO_PREFIX
             case "$f" in
               "$REPO_PREFIX" | "$REPO_PREFIX/"* )
                 if [ "$f" = "$REPO_PREFIX" ]; then
@@ -184,15 +202,13 @@ jobs:
                 ;;
             esac
 
-            # Only .cfg files should be here; sanity-check case-insensitive
+            # Sanity-check: only .cfg files
             if ! echo "$relpath" | grep -E -i '\.cfg$' >/dev/null 2>&1; then
               echo "Skipping $f (not a .cfg file)"
               continue
             fi
 
-            # Determine if file exists at current commit (present) or was deleted
             if git --no-pager ls-files --error-unmatch "$f" >/dev/null 2>&1; then
-              # present -> upload (only if regular file exists in workspace)
               if [ -f "$f" ]; then
                 echo "Preparing to upload: $f (remote relpath: $relpath)"
                 for i in 1 2 3; do
@@ -212,7 +228,6 @@ jobs:
                 echo "Skipping $f (not a regular file in workspace)"
               fi
             else
-              # deleted -> remove remote
               echo "Detected delete for $f -> removing remote $relpath"
               for i in 1 2 3; do
                 HOST_VAR="SERVER${i}_HOST"; HOST="${!HOST_VAR:-}"
