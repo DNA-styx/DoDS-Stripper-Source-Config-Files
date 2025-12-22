@@ -8,7 +8,7 @@ on:
       - 'addons/sourcemod/configs/stripper/**/*.cfg'
 
 env:
-  DRY_RUN: false   # set to false to actually upload
+  DRY_RUN: true   # set to false when ready to actually upload
 
 jobs:
   upload-stripper-cfgs-server1:
@@ -21,9 +21,10 @@ jobs:
       - name: Install lftp
         run: sudo apt-get update && sudo apt-get install -y lftp
 
-      - name: Dry run – list files that would be uploaded
+      - name: List .cfg files that would be uploaded
         run: |
           echo "Dry run mode: $DRY_RUN"
+          echo "Files detected locally:"
           find addons/sourcemod/configs/stripper \
             -maxdepth 2 \
             -type f \
@@ -33,6 +34,7 @@ jobs:
       - name: Upload .cfg files via SFTP
         if: env.DRY_RUN == 'false'
         run: |
+          echo "Uploading .cfg files to SFTP server..."
           lftp -u "${{ secrets.SFTP_USER1 }},${{ secrets.SFTP_PASSWORD1 }}" \
             -p ${{ secrets.SFTP_PORT1 }} \
             sftp://${{ secrets.SFTP_HOST1 }} <<EOF
@@ -40,7 +42,7 @@ jobs:
           mirror -R \
             --only-newer \
             --include-glob=*.cfg \
-            --exclude-glob=* \
+            --include-glob=*/\*.cfg \
             --depth-first \
             addons/sourcemod/configs/stripper \
             ${{ secrets.SFTP_TARGET1 }}
