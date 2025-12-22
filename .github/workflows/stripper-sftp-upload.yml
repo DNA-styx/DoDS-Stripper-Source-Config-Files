@@ -8,7 +8,7 @@ on:
       - 'addons/sourcemod/configs/stripper/**/*.cfg'
 
 env:
-  DRY_RUN: true   # set to false when ready to actually upload
+  DRY_RUN: false   # set to false when ready to actually upload
 
 jobs:
   upload-stripper-cfgs-server1:
