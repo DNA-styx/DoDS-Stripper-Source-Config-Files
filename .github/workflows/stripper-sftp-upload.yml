@@ -1,4 +1,4 @@
-name: Upload Changed Stripper CFGs via SFTP (Server 1)
+name: Upload Stripper CFGs via SFTP (Server 1)
 
 on:
   push:
@@ -8,10 +8,10 @@ on:
       - 'addons/sourcemod/configs/stripper/**/*.cfg'
 
 env:
-  DRY_RUN: false   # set to false to actually upload
+  DRY_RUN: true   # set to false when ready to actually upload
 
 jobs:
-  upload-changed-stripper-cfgs:
+  upload-stripper-cfgs-server1:
     runs-on: ubuntu-latest
 
     steps:
@@ -21,31 +21,30 @@ jobs:
       - name: Install lftp
         run: sudo apt-get update && sudo apt-get install -y lftp
 
-      - name: Get list of changed .cfg files
-        id: changed_files
+      - name: List .cfg files that would be uploaded
         run: |
-          echo "Changed .cfg files in the last commit:"
-          git fetch --depth=2
-          CHANGED=$(git diff --name-only HEAD~1 HEAD -- 'addons/sourcemod/configs/stripper/**/*.cfg')
-          echo "$CHANGED"
-          echo "::set-output name=files::$CHANGED"
+          echo "Dry run mode: $DRY_RUN"
+          echo "Files detected locally:"
+          find addons/sourcemod/configs/stripper \
+            -maxdepth 2 \
+            -type f \
+            -name "*.cfg" \
+            -print
 
-      - name: Dry run - show changed files
-        if: env.DRY_RUN == 'true'
+      - name: Upload .cfg files via SFTP
+        if: env.DRY_RUN == 'false'
         run: |
-          echo "Dry run mode - these files would be uploaded:"
-          echo "${{ steps.changed_files.outputs.files }}"
-
-      - name: Upload changed .cfg files via SFTP
-        if: env.DRY_RUN == 'false' && steps.changed_files.outputs.files != ''
-        run: |
-          for FILE in ${{ steps.changed_files.outputs.files }}; do
-            echo "Uploading $FILE..."
-            lftp -u "${{ secrets.SFTP_USER1 }},${{ secrets.SFTP_PASSWORD1 }}" \
-              -p ${{ secrets.SFTP_PORT1 }} \
-              sftp://${{ secrets.SFTP_HOST1 }} <<EOF
-            set sftp:auto-confirm yes
-            put -O ${{ secrets.SFTP_TARGET1 }} "$FILE"
-            bye
-            EOF
-          done
+          echo "Uploading .cfg files to SFTP server..."
+          lftp -u "${{ secrets.SFTP_USER1 }},${{ secrets.SFTP_PASSWORD1 }}" \
+            -p ${{ secrets.SFTP_PORT1 }} \
+            sftp://${{ secrets.SFTP_HOST1 }} <<EOF
+          set sftp:auto-confirm yes
+          mirror -R \
+            --only-newer \
+            --include-glob=*.cfg \
+            --include-glob=*/\*.cfg \
+            --depth-first \
+            addons/sourcemod/configs/stripper \
+            ${{ secrets.SFTP_TARGET1 }}
+          bye
+          EOF
