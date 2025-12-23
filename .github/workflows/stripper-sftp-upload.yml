@@ -31,7 +31,7 @@ jobs:
             -name "*.cfg" \
             -print
 
-      - name: Upload to Sever 1 (US)
+      - name: Upload .cfg files via SFTP
         if: env.DRY_RUN == 'false'
         run: |
           echo "Uploading .cfg files to SFTP server..."
@@ -39,6 +39,10 @@ jobs:
             -p ${{ secrets.SFTP_PORT1 }} \
             sftp://${{ secrets.SFTP_HOST1 }} <<EOF
           set sftp:auto-confirm yes
+          set net:timeout 10
+          set net:max-retries 2
+          set net:reconnect-interval-base 5
+          set cmd:fail-exit yes
           mirror -R \
             --only-newer \
             --include-glob=*.cfg \
@@ -48,37 +52,3 @@ jobs:
             ${{ secrets.SFTP_TARGET1 }}
           bye
           EOF
-
-      - name: Upload to Server 2 (EU)
-        if: env.DRY_RUN == 'false'
-        run: |
-            lftp -u "${{ secrets.SFTP_USER2 }},${{ secrets.SFTP_PASSWORD2 }}" \
-                -p ${{ secrets.SFTP_PORT2 }} \
-                sftp://${{ secrets.SFTP_HOST2 }} <<EOF
-            set sftp:auto-confirm yes
-            mirror -R \
-                --only-newer \
-                --include-glob=*.cfg \
-                --include-glob=*/\*.cfg \
-                --depth-first \
-                addons/sourcemod/configs/stripper \
-                ${{ secrets.SFTP_TARGET2 }}
-            bye
-            EOF
-
-      - name: Upload to Server 3 (AU)
-        if: env.DRY_RUN == 'false'
-        run: |
-            lftp -u "${{ secrets.SFTP_USER3 }},${{ secrets.SFTP_PASSWORD3 }}" \
-                -p ${{ secrets.SFTP_PORT3 }} \
-                sftp://${{ secrets.SFTP_HOST3 }} <<EOF
-            set sftp:auto-confirm yes
-            mirror -R \
-                --only-newer \
-                --include-glob=*.cfg \
-                --include-glob=*/\*.cfg \
-                --depth-first \
-                addons/sourcemod/configs/stripper \
-                ${{ secrets.SFTP_TARGET3 }}
-            bye
-            EOF
