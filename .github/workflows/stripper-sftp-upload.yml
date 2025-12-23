@@ -66,7 +66,7 @@ jobs:
             bye
             EOF
 
-      - name: Upload to Server 3
+      - name: Upload to Server 3 (AU)
         if: env.DRY_RUN == 'false'
         run: |
             lftp -u "${{ secrets.SFTP_USER3 }},${{ secrets.SFTP_PASSWORD3 }}" \
