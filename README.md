@@ -1,5 +1,7 @@
 # Day of Defeat:Source Stripper:Source Config Files
-Collection of config files used to fix bugs, make maps more bot friendly and add features
+Collection of config files used to fix bugs, make maps more bot friendly and add features.
+
+As used on the DNAGames servers: https://stats.dnagames.site/
 
 Get Stripper:Source
 Info: https://forums.alliedmods.net/showthread.php?t=39439
