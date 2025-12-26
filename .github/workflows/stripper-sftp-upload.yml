@@ -1,17 +1,14 @@
-name: Upload Stripper CFGs via SFTP (Server 1)
+name: Upload DoD files via SFTP (changed files only)
 
 on:
   push:
     branches:
       - main
     paths:
-      - 'addons/sourcemod/configs/stripper/**/*.cfg'
-
-env:
-  DRY_RUN: false   # set to false when ready to actually upload
+      - 'addons/sourcemod/configs/dod/**'
 
 jobs:
-  upload-stripper-cfgs-server1:
+  upload-dod:
     runs-on: ubuntu-latest
 
     steps:
@@ -21,76 +18,41 @@ jobs:
       - name: Install lftp
         run: sudo apt-get update && sudo apt-get install -y lftp
 
-      - name: List .cfg files that would be uploaded
-        run: |
-          echo "Dry run mode: $DRY_RUN"
-          echo "Files detected locally:"
-          find addons/sourcemod/configs/stripper \
-            -maxdepth 2 \
-            -type f \
-            -name "*.cfg" \
-            -print
+      # ---------------- SERVER 1 ----------------
+      - name: Upload changed files to Server 1 (US)
+        run: >
+          lftp -u "${{ secrets.SFTP_USER1 }},${{ secrets.SFTP_PASSWORD1 }}"
+          -p ${{ secrets.SFTP_PORT1 }}
+          sftp://${{ secrets.SFTP_HOST1 }}
+          -e "set sftp:auto-confirm yes;
+              set net:timeout 10;
+              set cmd:fail-exit yes;
+              cd ${{ secrets.SFTP_TARGET1 }};
+              $(git diff --name-only ${{ github.event.before }} ${{ github.sha }} -- addons/sourcemod/configs/dod | sed 's|^|put |');
+              bye"
 
-      - name: Upload to Sever 1 (US)
-        if: env.DRY_RUN == 'false'
-        run: |
-          echo "Uploading .cfg files to SFTP server..."
-          lftp -u "${{ secrets.SFTP_USER1 }},${{ secrets.SFTP_PASSWORD1 }}" \
-            -p ${{ secrets.SFTP_PORT1 }} \
-            sftp://${{ secrets.SFTP_HOST1 }} <<EOF
-          set sftp:auto-confirm yes
-          set net:timeout 10
-          set net:max-retries 2
-          set net:reconnect-interval-base 5
-          set cmd:fail-exit yes
-          mirror -R \
-            --only-newer \
-            --include-glob=*.cfg \
-            --include-glob=*/\*.cfg \
-            --depth-first \
-            addons/sourcemod/configs/stripper \
-            ${{ secrets.SFTP_TARGET1 }}
-          bye
-          EOF
+      # ---------------- SERVER 2 ----------------
+      - name: Upload changed files to Server 2 (EU)
+        run: >
+          lftp -u "${{ secrets.SFTP_USER2 }},${{ secrets.SFTP_PASSWORD2 }}"
+          -p ${{ secrets.SFTP_PORT2 }}
+          sftp://${{ secrets.SFTP_HOST2 }}
+          -e "set sftp:auto-confirm yes;
+              set net:timeout 10;
+              set cmd:fail-exit yes;
+              cd ${{ secrets.SFTP_TARGET2 }};
+              $(git diff --name-only ${{ github.event.before }} ${{ github.sha }} -- addons/sourcemod/configs/dod | sed 's|^|put |');
+              bye"
 
-      - name: Upload to Server 2 (EU)
-        if: env.DRY_RUN == 'false'
-        run: |
-          lftp -u "${{ secrets.SFTP_USER2 }},${{ secrets.SFTP_PASSWORD2 }}" \
-            -p ${{ secrets.SFTP_PORT2 }} \
-            sftp://${{ secrets.SFTP_HOST2 }} <<EOF
-          set sftp:auto-confirm yes
-          set net:timeout 10
-          set net:max-retries 2
-          set net:reconnect-interval-base 5
-          set cmd:fail-exit yes
-          mirror -R \
-            --only-newer \
-            --include-glob=*.cfg \
-            --include-glob=*/\*.cfg \
-            --depth-first \
-            addons/sourcemod/configs/stripper \
-            ${{ secrets.SFTP_TARGET2 }}
-          bye
-          EOF
-
-      - name: Upload to Server 3 (AU)
-        if: env.DRY_RUN == 'false'
-        run: |
-          lftp -u "${{ secrets.SFTP_USER3 }},${{ secrets.SFTP_PASSWORD3 }}" \
-            -p ${{ secrets.SFTP_PORT3 }} \
-            sftp://${{ secrets.SFTP_HOST3 }} <<EOF
-          set sftp:auto-confirm yes
-          set net:timeout 10
-          set net:max-retries 2
-          set net:reconnect-interval-base 5
-          set cmd:fail-exit yes
-          mirror -R \
-            --only-newer \
-            --include-glob=*.cfg \
-            --include-glob=*/\*.cfg \
-            --depth-first \
-            addons/sourcemod/configs/stripper \
-            ${{ secrets.SFTP_TARGET3 }}
-          bye
-          EOF
+      # ---------------- SERVER 3 ----------------
+      - name: Upload changed files to Server 3 (AU)
+        run: >
+          lftp -u "${{ secrets.SFTP_USER3 }},${{ secrets.SFTP_PASSWORD3 }}"
+          -p ${{ secrets.SFTP_PORT3 }}
+          sftp://${{ secrets.SFTP_HOST3 }}
+          -e "set sftp:auto-confirm yes;
+              set net:timeout 10;
+              set cmd:fail-exit yes;
+              cd ${{ secrets.SFTP_TARGET3 }};
+              $(git diff --name-only ${{ github.event.before }} ${{ github.sha }} -- addons/sourcemod/configs/dod | sed 's|^|put |');
+              bye"
