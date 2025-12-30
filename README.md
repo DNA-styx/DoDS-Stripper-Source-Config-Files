@@ -1,6 +1,8 @@
 # Day of Defeat:Source Stripper:Source Config Files
 Collection of config files used to fix bugs, make maps more bot friendly and add features.
 
+Improvements/suggestions welcome.
+
 As used on the DNAGames servers: https://stats.dnagames.site/
 
 Get Stripper:Source
