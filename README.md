@@ -5,7 +5,7 @@ Improvements/suggestions welcome.
 
 As used on the DNAGames servers: https://stats.dnagames.win/
 
-Get Stripper:Source
+# Get Stripper:Source
 Info: https://forums.alliedmods.net/showthread.php?t=39439
 
 Metamod Extension: https://www.bailopan.net/stripper/
